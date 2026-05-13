@@ -1,3 +1,6 @@
+CREATE DATABASE IF NOT EXISTS cdc_demo;
+USE cdc_demo;
+
 CREATE TABLE orders (
     id INT AUTO_INCREMENT PRIMARY KEY,
     customer_name VARCHAR(255),
