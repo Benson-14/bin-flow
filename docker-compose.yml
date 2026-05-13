@@ -1,0 +1,34 @@
+version: '3.9'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: binflow-mysql
+
+    restart: unless-stopped
+
+    ports:
+      - "3307:3306"
+
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: cdc_demo
+      MYSQL_USER: cdc_user
+      MYSQL_PASSWORD: cdc_password
+
+    command:
+      [
+        "--server-id=1",
+        "--log-bin=mysql-bin",
+        "--binlog-format=ROW",
+        "--binlog-row-image=FULL",
+        "--gtid-mode=ON",
+        "--enforce-gtid-consistency=ON"
+      ]
+
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./mysql/init:/docker-entrypoint-initdb.d
+
+volumes:
+  mysql_data:
