@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/go-mysql-org/go-mysql/mysql"
 	"github.com/go-mysql-org/go-mysql/replication"
+
+	"github.com/Benson-14/bin-flow/internal/parser"
 )
 
 func main() {
@@ -38,20 +41,14 @@ func main() {
 			panic(err)
 		}
 
-		switch event.Header.EventType {
-		case replication.WRITE_ROWS_EVENTv2:
-			fmt.Println("INSERT detected")
-		case replication.UPDATE_ROWS_EVENTv2:
-			fmt.Println("UPDATE detected")
-		case replication.DELETE_ROWS_EVENTv2:
-			fmt.Println("DELETE detected")
-		case replication.XID_EVENT:
-			fmt.Println("TRANSACTION COMMITTED")
-		}
-
 		switch e := event.Event.(type) {
 		case *replication.RowsEvent:
-			fmt.Println(e.Rows)
+			cdcEvents := parser.ParseCDCEvent(e, event.Header.EventType, event.Header.Timestamp)
+			for _, cdcEvent := range cdcEvents {
+				b, _ := json.MarshalIndent(cdcEvent, "", "  ")
+				fmt.Println(string(b))
+			}
 		}
+
 	}
 }
