@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/go-mysql-org/go-mysql/mysql"
 	"github.com/go-mysql-org/go-mysql/replication"
@@ -16,6 +19,19 @@ import (
 const checkpointFile = "checkpoint.json"
 
 func main() {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	signalChan := make(chan os.Signal, 1)
+
+	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(signalChan)
+
+	go func() {
+		sig := <-signalChan
+		log.Printf("received signal: %v", sig)
+		cancel()
+	}()
 
 	cp, err := checkpoint.LoadCheckpoint(checkpointFile)
 	if err != nil {
@@ -34,6 +50,7 @@ func main() {
 	}
 
 	syncer := replication.NewBinlogSyncer(cfg)
+	defer syncer.Close()
 
 	steamer, err := syncer.StartSync(mysql.Position{
 		Name: cp.BinlogFile,
@@ -47,9 +64,14 @@ func main() {
 	fmt.Println("Listening for binlog events...")
 
 	for {
-		event, err := steamer.GetEvent(context.Background())
+		event, err := steamer.GetEvent(ctx)
 		if err != nil {
-			log.Fatalf("error getting event: %v", err)
+			if ctx.Err() != nil {
+				log.Println("Shutdown signal received. Exiting event loop...")
+				break
+			}
+			log.Printf("Error getting event: %v", err)
+			continue
 		}
 
 		switch e := event.Event.(type) {
@@ -74,4 +96,10 @@ func main() {
 			}
 		}
 	}
+
+	if err := cp.Save(); err != nil {
+		log.Printf("failed to save final checkpoint: %v", err)
+	}
+
+	log.Println("CDC engine stopped gracefully")
 }
