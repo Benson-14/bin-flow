@@ -8,3 +8,9 @@ type CDCEvent struct {
 	Data      map[string]interface{} `json:"data"`
 	OldData   map[string]interface{} `json:"old_data,omitempty"`
 }
+
+type CDCMessage struct {
+	Event      CDCEvent
+	BinlogFile string
+	BinlogPos  uint32
+}

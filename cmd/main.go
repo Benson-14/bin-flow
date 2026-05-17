@@ -72,7 +72,7 @@ func main() {
 	}
 
 	// CDC Event Channel
-	eventsChan := make(chan models.CDCEvent, 100)
+	eventsChan := make(chan models.CDCMessage, 100)
 
 	var wg sync.WaitGroup
 
@@ -109,18 +109,21 @@ func main() {
 			case *replication.RowsEvent:
 				cdcEvents := parser.ParseCDCEvent(e, event.Header.EventType, event.Header.Timestamp)
 				for _, cdcEvent := range cdcEvents {
+
 					log.Println("sending event to channel...")
+					cdcMessage := models.CDCMessage{
+						Event:      cdcEvent,
+						BinlogFile: cp.BinlogFile,
+						BinlogPos:  event.Header.LogPos,
+					}
+
 					select {
-					case eventsChan <- cdcEvent:
+					case eventsChan <- cdcMessage:
 						log.Println("event queued")
 					case <-ctx.Done():
 						log.Println("Context cancelled, breaking from event loop...")
 						return
 					}
-				}
-				// update checkpoint after processing each rows event, will change later to happen after worker completes processing
-				if err := cp.Update(cp.BinlogFile, event.Header.LogPos); err != nil {
-					log.Printf("failed to save checkpoint: %v", err)
 				}
 			}
 		}
@@ -133,17 +136,28 @@ func main() {
 	// Consumer Goroutine
 	wg.Go(func() {
 
-		batch := make([]models.CDCEvent, 0, batchSize)
+		batch := make([]models.CDCMessage, 0, batchSize)
 		var batchCounter int
 
-		for cdcEvent := range eventsChan {
-			batch = append(batch, cdcEvent)
+		for msg := range eventsChan {
+			batch = append(batch, msg)
 
 			if len(batch) >= batchSize {
 				batchCounter++
 				if err := flushBatch(batch, batchCounter); err != nil {
 					log.Printf("failed to flush batch: %v", err)
+					continue
 				}
+
+				lastMessage := batch[len(batch)-1]
+
+				if err := cp.Update(lastMessage.BinlogFile, lastMessage.BinlogPos); err != nil {
+					log.Printf("failed to save checkpoint: %v", err)
+				}
+
+				log.Printf("checkpoint updated → %s:%d", lastMessage.BinlogFile, lastMessage.BinlogPos)
+
+				// Reset batch to clear memory
 				batch = batch[:0]
 			}
 		}
@@ -151,8 +165,18 @@ func main() {
 		if len(batch) > 0 {
 			log.Printf("Flushing remaining %d events...", len(batch))
 			batchCounter++
+
 			if err := flushBatch(batch, batchCounter); err != nil {
 				log.Printf("failed to flush batch: %v", err)
+			} else {
+
+				lastMessage := batch[len(batch)-1]
+
+				if err := cp.Update(lastMessage.BinlogFile, lastMessage.BinlogPos); err != nil {
+					log.Printf("failed to save checkpoint: %v", err)
+				} else {
+					log.Printf("checkpoint updated → %s:%d", lastMessage.BinlogFile, lastMessage.BinlogPos)
+				}
 			}
 		}
 
@@ -169,9 +193,15 @@ func main() {
 	log.Println("CDC engine stopped gracefully!")
 }
 
-func flushBatch(batch []models.CDCEvent, batchNumber int) error {
+func flushBatch(batch []models.CDCMessage, batchNumber int) error {
 	log.Printf("flushing batch %d with %d events", batchNumber, len(batch))
-	b, err := json.MarshalIndent(batch, "", "  ")
+
+	events := make([]models.CDCEvent, 0, len(batch))
+
+	for _, message := range batch {
+		events = append(events, message.Event)
+	}
+	b, err := json.MarshalIndent(events, "", "  ")
 
 	if err != nil {
 		return err
