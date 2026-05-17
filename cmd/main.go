@@ -9,7 +9,6 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
-	"time"
 
 	"github.com/go-mysql-org/go-mysql/mysql"
 	"github.com/go-mysql-org/go-mysql/replication"
@@ -20,6 +19,7 @@ import (
 )
 
 const checkpointFile = "checkpoint.json"
+const batchSize = 10
 
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -126,16 +126,34 @@ func main() {
 		}
 	})
 
+	if err := os.MkdirAll("data", 0755); err != nil {
+		log.Fatalf("failed to create data directory: %v", err)
+	}
+
 	// Consumer Goroutine
 	wg.Go(func() {
+
+		batch := make([]models.CDCEvent, 0, batchSize)
+		var batchCounter int
+
 		for cdcEvent := range eventsChan {
-			time.Sleep(2 * time.Second)
-			b, err := json.MarshalIndent(cdcEvent, "", "  ")
-			if err != nil {
-				log.Printf("failed to marshal event: %v", err)
-				continue
+			batch = append(batch, cdcEvent)
+
+			if len(batch) >= batchSize {
+				batchCounter++
+				if err := flushBatch(batch, batchCounter); err != nil {
+					log.Printf("failed to flush batch: %v", err)
+				}
+				batch = batch[:0]
 			}
-			fmt.Println(string(b))
+		}
+
+		if len(batch) > 0 {
+			log.Printf("Flushing remaining %d events...", len(batch))
+			batchCounter++
+			if err := flushBatch(batch, batchCounter); err != nil {
+				log.Printf("failed to flush batch: %v", err)
+			}
 		}
 
 		log.Println("Consumer stopped!")
@@ -149,4 +167,23 @@ func main() {
 	}
 
 	log.Println("CDC engine stopped gracefully!")
+}
+
+func flushBatch(batch []models.CDCEvent, batchNumber int) error {
+	log.Printf("flushing batch %d with %d events", batchNumber, len(batch))
+	b, err := json.MarshalIndent(batch, "", "  ")
+
+	if err != nil {
+		return err
+	}
+
+	fileName := fmt.Sprintf("data/batch-%03d.json", batchNumber)
+
+	if err := os.WriteFile(fileName, b, 0644); err != nil {
+		return err
+	}
+
+	log.Printf("batch %d flushed to %s", batchNumber, fileName)
+
+	return nil
 }
