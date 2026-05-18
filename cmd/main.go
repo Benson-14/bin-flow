@@ -47,6 +47,10 @@ func main() {
 		log.Fatalf("failed to load checkpoint: %v", err)
 	}
 
+	// Runtime replication state
+	var currentBinlogFile string
+	currentBinlogFile = cp.BinlogFile
+
 	fmt.Printf("Resuming from %s @ position %d\n", cp.BinlogFile, cp.BinlogPos)
 
 	// Replication Configuration
@@ -69,6 +73,11 @@ func main() {
 
 	if err != nil {
 		log.Fatalf("failed to start sync: %v", err)
+	}
+
+	s3Sink, err := sink.NewS3Sink(ctx, "cdc-lake")
+	if err != nil {
+		log.Fatalf("failed to create S3 sink: %v", err)
 	}
 
 	// CDC Event Channel
@@ -99,11 +108,9 @@ func main() {
 			switch e := event.Event.(type) {
 			case *replication.RotateEvent:
 				newFile := string(e.NextLogName)
-				if newFile != cp.BinlogFile {
+				if newFile != currentBinlogFile {
 					fmt.Printf("Binlog rotated → %s\n", newFile)
-					if err := cp.Update(newFile, uint32(e.Position)); err != nil {
-						log.Printf("failed to save checkpoint after rotation: %v", err)
-					}
+					currentBinlogFile = newFile
 				}
 
 			case *replication.RowsEvent:
@@ -113,7 +120,7 @@ func main() {
 					log.Println("sending event to channel...")
 					cdcMessage := models.CDCMessage{
 						Event:      cdcEvent,
-						BinlogFile: cp.BinlogFile,
+						BinlogFile: currentBinlogFile,
 						BinlogPos:  event.Header.LogPos,
 					}
 
@@ -144,9 +151,9 @@ func main() {
 
 			if len(batch) >= batchSize {
 				batchCounter++
-				if err := flushBatch(batch, batchCounter); err != nil {
+				if err := flushBatch(ctx, s3Sink, batch, batchCounter); err != nil {
 					log.Printf("failed to flush batch: %v", err)
-					continue
+					return
 				}
 
 				lastMessage := batch[len(batch)-1]
@@ -166,7 +173,7 @@ func main() {
 			log.Printf("Flushing remaining %d events...", len(batch))
 			batchCounter++
 
-			if err := flushBatch(batch, batchCounter); err != nil {
+			if err := flushBatch(ctx, s3Sink, batch, batchCounter); err != nil {
 				log.Printf("failed to flush batch: %v", err)
 			} else {
 
@@ -193,7 +200,7 @@ func main() {
 	log.Println("CDC engine stopped gracefully!")
 }
 
-func flushBatch(batch []models.CDCMessage, batchNumber int) error {
+func flushBatch(ctx context.Context, s3Sink *sink.S3Sink, batch []models.CDCMessage, batchNumber int) error {
 	log.Printf("flushing parquet batch %d with %d events", batchNumber, len(batch))
 
 	records := make([]models.CDCParquetRecord, 0, len(batch))
@@ -202,7 +209,6 @@ func flushBatch(batch []models.CDCMessage, batchNumber int) error {
 		record, err := sink.BuildParquetRecord(message.Event)
 		if err != nil {
 			log.Printf("failed to build parquet record: %v", err)
-			continue
 		}
 		records = append(records, record)
 	}
@@ -211,6 +217,10 @@ func flushBatch(batch []models.CDCMessage, batchNumber int) error {
 
 	if err := sink.WriteParquetBatch(fileName, records); err != nil {
 		return fmt.Errorf("WriteParquetBatch: %w", err)
+	}
+
+	if err := s3Sink.UploadFile(ctx, fileName, sink.BuildObjectKey(fileName)); err != nil {
+		return fmt.Errorf("UploadFile: %w", err)
 	}
 
 	log.Printf("parquet batch %d flushed to %s", batchNumber, fileName)
