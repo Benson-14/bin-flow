@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -16,6 +15,7 @@ import (
 	"github.com/Benson-14/bin-flow/internal/checkpoint"
 	"github.com/Benson-14/bin-flow/internal/models"
 	"github.com/Benson-14/bin-flow/internal/parser"
+	"github.com/Benson-14/bin-flow/internal/sink"
 )
 
 const checkpointFile = "checkpoint.json"
@@ -194,26 +194,26 @@ func main() {
 }
 
 func flushBatch(batch []models.CDCMessage, batchNumber int) error {
-	log.Printf("flushing batch %d with %d events", batchNumber, len(batch))
+	log.Printf("flushing parquet batch %d with %d events", batchNumber, len(batch))
 
-	events := make([]models.CDCEvent, 0, len(batch))
+	records := make([]models.CDCParquetRecord, 0, len(batch))
 
 	for _, message := range batch {
-		events = append(events, message.Event)
-	}
-	b, err := json.MarshalIndent(events, "", "  ")
-
-	if err != nil {
-		return err
-	}
-
-	fileName := fmt.Sprintf("data/batch-%03d.json", batchNumber)
-
-	if err := os.WriteFile(fileName, b, 0644); err != nil {
-		return err
+		record, err := sink.BuildParquetRecord(message.Event)
+		if err != nil {
+			log.Printf("failed to build parquet record: %v", err)
+			continue
+		}
+		records = append(records, record)
 	}
 
-	log.Printf("batch %d flushed to %s", batchNumber, fileName)
+	fileName := fmt.Sprintf("data/batch-%03d.parquet", batchNumber)
+
+	if err := sink.WriteParquetBatch(fileName, records); err != nil {
+		return fmt.Errorf("WriteParquetBatch: %w", err)
+	}
+
+	log.Printf("parquet batch %d flushed to %s", batchNumber, fileName)
 
 	return nil
 }

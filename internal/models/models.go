@@ -14,3 +14,12 @@ type CDCMessage struct {
 	BinlogFile string
 	BinlogPos  uint32
 }
+
+type CDCParquetRecord struct {
+	Database    string
+	Table       string
+	Operation   string
+	Timestamp   int64
+	DataJSON    string
+	OldDataJSON string
+}
