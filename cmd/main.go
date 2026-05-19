@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/go-mysql-org/go-mysql/mysql"
 	"github.com/go-mysql-org/go-mysql/replication"
@@ -144,20 +145,22 @@ func main() {
 	// Consumer Goroutine
 	wg.Go(func() {
 
-		batch := make([]models.CDCMessage, 0, batchSize)
-		var batchCounter int
+		batches := make(map[string][]models.CDCMessage)
+		batchCounters := make(map[string]int)
 
 		for msg := range eventsChan {
-			batch = append(batch, msg)
+			tableKey := fmt.Sprintf("%s/%s", msg.Event.Database, msg.Event.Table)
+			batches[tableKey] = append(batches[tableKey], msg)
 
-			if len(batch) >= batchSize {
-				batchCounter++
-				if err := processor.FlushBatch(ctx, s3Sink, batch, batchCounter); err != nil {
+			currentBatch := batches[tableKey]
+			if len(currentBatch) >= batchSize {
+				batchCounters[tableKey]++
+				if err := processor.FlushBatch(ctx, s3Sink, currentBatch, tableKey, batchCounters[tableKey]); err != nil {
 					log.Printf("failed to flush batch: %v", err)
 					return
 				}
 
-				lastMessage := batch[len(batch)-1]
+				lastMessage := batches[tableKey][len(batches[tableKey])-1]
 
 				if err := cp.Update(lastMessage.BinlogFile, lastMessage.BinlogPos); err != nil {
 					log.Printf("failed to save checkpoint: %v", err)
@@ -165,26 +168,34 @@ func main() {
 
 				log.Printf("checkpoint updated → %s:%d", lastMessage.BinlogFile, lastMessage.BinlogPos)
 
-				// Reset batch to clear memory
-				batch = batch[:0]
+				// clear only this table's batch to save memory
+				batches[tableKey] = batches[tableKey][:0]
 			}
 		}
 
-		if len(batch) > 0 {
+		for tableKey, batch := range batches {
+			flushCtx, flushCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer flushCancel()
+
+			if len(batch) == 0 {
+				continue
+			}
+
 			log.Printf("Flushing remaining %d events...", len(batch))
-			batchCounter++
 
-			if err := processor.FlushBatch(ctx, s3Sink, batch, batchCounter); err != nil {
+			batchCounters[tableKey]++
+
+			if err := processor.FlushBatch(flushCtx, s3Sink, batch, tableKey, batchCounters[tableKey]); err != nil {
 				log.Printf("failed to flush batch: %v", err)
+				continue
+			}
+
+			lastMessage := batch[len(batch)-1]
+
+			if err := cp.Update(lastMessage.BinlogFile, lastMessage.BinlogPos); err != nil {
+				log.Printf("failed to save checkpoint: %v", err)
 			} else {
-
-				lastMessage := batch[len(batch)-1]
-
-				if err := cp.Update(lastMessage.BinlogFile, lastMessage.BinlogPos); err != nil {
-					log.Printf("failed to save checkpoint: %v", err)
-				} else {
-					log.Printf("checkpoint updated → %s:%d", lastMessage.BinlogFile, lastMessage.BinlogPos)
-				}
+				log.Printf("checkpoint updated → %s:%d", lastMessage.BinlogFile, lastMessage.BinlogPos)
 			}
 		}
 
@@ -200,5 +211,3 @@ func main() {
 
 	log.Println("CDC engine stopped gracefully!")
 }
-
-

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -95,5 +95,5 @@ func BuildObjectKey(filePath string) string {
 	// data/batch-001.parquet
 	// → batch-001.parquet
 
-	return filepath.Base(filePath)
+	return strings.TrimPrefix(filePath, "data/")
 }

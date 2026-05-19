@@ -9,7 +9,7 @@ import (
 	"github.com/Benson-14/bin-flow/internal/sink"
 )
 
-func FlushBatch(ctx context.Context, s3Sink *sink.S3Sink, batch []models.CDCMessage, batchNumber int) error {
+func FlushBatch(ctx context.Context, s3Sink *sink.S3Sink, batch []models.CDCMessage, tableKey string, batchNumber int) error {
 	log.Printf("flushing parquet batch %d with %d events", batchNumber, len(batch))
 
 	records := make([]models.CDCParquetRecord, 0, len(batch))
@@ -17,12 +17,12 @@ func FlushBatch(ctx context.Context, s3Sink *sink.S3Sink, batch []models.CDCMess
 	for _, message := range batch {
 		record, err := sink.BuildParquetRecord(message.Event)
 		if err != nil {
-			log.Printf("failed to build parquet record: %v", err)
+			return fmt.Errorf("failed to build parquet record: %w", err)
 		}
 		records = append(records, record)
 	}
 
-	fileName := fmt.Sprintf("data/batch-%03d.parquet", batchNumber)
+	fileName := fmt.Sprintf("data/%s/batch-%03d.parquet", tableKey, batchNumber)
 
 	if err := sink.WriteParquetBatch(fileName, records); err != nil {
 		return fmt.Errorf("WriteParquetBatch: %w", err)
