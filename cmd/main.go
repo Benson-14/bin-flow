@@ -15,6 +15,7 @@ import (
 	"github.com/Benson-14/bin-flow/internal/checkpoint"
 	"github.com/Benson-14/bin-flow/internal/models"
 	"github.com/Benson-14/bin-flow/internal/parser"
+	"github.com/Benson-14/bin-flow/internal/processor"
 	"github.com/Benson-14/bin-flow/internal/sink"
 )
 
@@ -151,7 +152,7 @@ func main() {
 
 			if len(batch) >= batchSize {
 				batchCounter++
-				if err := flushBatch(ctx, s3Sink, batch, batchCounter); err != nil {
+				if err := processor.FlushBatch(ctx, s3Sink, batch, batchCounter); err != nil {
 					log.Printf("failed to flush batch: %v", err)
 					return
 				}
@@ -173,7 +174,7 @@ func main() {
 			log.Printf("Flushing remaining %d events...", len(batch))
 			batchCounter++
 
-			if err := flushBatch(ctx, s3Sink, batch, batchCounter); err != nil {
+			if err := processor.FlushBatch(ctx, s3Sink, batch, batchCounter); err != nil {
 				log.Printf("failed to flush batch: %v", err)
 			} else {
 
@@ -200,30 +201,4 @@ func main() {
 	log.Println("CDC engine stopped gracefully!")
 }
 
-func flushBatch(ctx context.Context, s3Sink *sink.S3Sink, batch []models.CDCMessage, batchNumber int) error {
-	log.Printf("flushing parquet batch %d with %d events", batchNumber, len(batch))
 
-	records := make([]models.CDCParquetRecord, 0, len(batch))
-
-	for _, message := range batch {
-		record, err := sink.BuildParquetRecord(message.Event)
-		if err != nil {
-			log.Printf("failed to build parquet record: %v", err)
-		}
-		records = append(records, record)
-	}
-
-	fileName := fmt.Sprintf("data/batch-%03d.parquet", batchNumber)
-
-	if err := sink.WriteParquetBatch(fileName, records); err != nil {
-		return fmt.Errorf("WriteParquetBatch: %w", err)
-	}
-
-	if err := s3Sink.UploadFile(ctx, fileName, sink.BuildObjectKey(fileName)); err != nil {
-		return fmt.Errorf("UploadFile: %w", err)
-	}
-
-	log.Printf("parquet batch %d flushed to %s", batchNumber, fileName)
-
-	return nil
-}
