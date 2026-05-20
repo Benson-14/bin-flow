@@ -22,17 +22,17 @@ func FlushBatch(ctx context.Context, s3Sink *sink.S3Sink, batch []models.CDCMess
 		records = append(records, record)
 	}
 
-	fileName := fmt.Sprintf("data/%s/batch-%03d.parquet", tableKey, batchNumber)
+	filePath := sink.BuildParquetFilePath(tableKey, batchNumber)
 
-	if err := sink.WriteParquetBatch(fileName, records); err != nil {
+	if err := sink.WriteParquetBatch(filePath, records); err != nil {
 		return fmt.Errorf("WriteParquetBatch: %w", err)
 	}
 
-	if err := s3Sink.UploadFile(ctx, fileName, sink.BuildObjectKey(fileName)); err != nil {
+	if err := s3Sink.UploadFile(ctx, filePath, sink.BuildObjectKey(filePath)); err != nil {
 		return fmt.Errorf("UploadFile: %w", err)
 	}
 
-	log.Printf("parquet batch %d flushed to %s", batchNumber, fileName)
+	log.Printf("parquet batch %d flushed to %s", batchNumber, filePath)
 
 	return nil
 }
