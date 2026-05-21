@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/go-mysql-org/go-mysql/replication"
 
 	"github.com/Benson-14/bin-flow/internal/checkpoint"
+	"github.com/Benson-14/bin-flow/internal/metadata"
 	"github.com/Benson-14/bin-flow/internal/models"
 	"github.com/Benson-14/bin-flow/internal/parser"
 	"github.com/Benson-14/bin-flow/internal/processor"
@@ -95,6 +97,8 @@ func main() {
 
 		defer close(eventsChan)
 
+		schemaCache := make(map[string]string)
+
 		for {
 			event, err := steamer.GetEvent(ctx)
 			if err != nil {
@@ -115,7 +119,43 @@ func main() {
 					currentBinlogFile = newFile
 				}
 
+			case *replication.QueryEvent:
+				query := strings.ToUpper(strings.TrimSpace(string(e.Query)))
+				if strings.HasPrefix(query, "ALTER TABLE") {
+
+					parts := strings.Fields(query)
+
+					if len(parts) >= 3 {
+						tableName := strings.Trim(parts[2], "`")
+						tableKey := fmt.Sprintf("%s/%s", string(e.Schema), tableName)
+						delete(schemaCache, tableKey)
+
+						log.Printf("schema cache invalidated for %s", tableKey)
+					}
+				}
+
 			case *replication.RowsEvent:
+
+				tableKey := fmt.Sprintf("%s/%s", string(e.Table.Schema), string(e.Table.Table))
+
+				columns := make([]string, 0, len(e.Table.ColumnName))
+				for _, col := range e.Table.ColumnName {
+					columns = append(columns, string(col))
+				}
+
+				schemaSignature := strings.Join(columns, ",")
+
+				cachedSignature, exists := schemaCache[tableKey]
+
+				if !exists || cachedSignature != schemaSignature {
+					if err := metadata.WriteSchemaMetadata(ctx, s3Sink, string(e.Table.Schema), string(e.Table.Table), columns); err != nil {
+						log.Printf("failed to write schema metadata: %v", err)
+					} else {
+						schemaCache[tableKey] = schemaSignature
+						log.Printf("Schema updated for %s", tableKey)
+					}
+				}
+
 				cdcEvents := parser.ParseCDCEvent(e, event.Header.EventType, event.Header.Timestamp)
 				for _, cdcEvent := range cdcEvents {
 

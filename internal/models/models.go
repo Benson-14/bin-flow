@@ -23,3 +23,10 @@ type CDCParquetRecord struct {
 	DataJSON    string
 	OldDataJSON string
 }
+
+type SchemaMetadata struct {
+	Database  string   `json:"database"`
+	Table     string   `json:"table"`
+	Columns   []string `json:"columns"`
+	UpdatedAt string   `json:"updated_at"`
+}
